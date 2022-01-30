@@ -31,7 +31,8 @@ from functools import partial, wraps
 from inspect import isclass
 from operator import eq, lt
 
-import tools  # Needed by HARM-GP
+import tools
+# from tools.constraint import valid  # Needed by HARM-GP
 
 ######################################
 # GP Data structure                  #
@@ -192,13 +193,14 @@ class Primitive(object):
         >>> pr.format(1, 2)
         'mul(1, 2)'
     """
-    __slots__ = ('name', 'arity', 'args', 'ret', 'seq')
+    __slots__ = ('name', 'arity', 'args', 'ret', 'seq', 'max_level')
 
-    def __init__(self, name, args, ret):
+    def __init__(self, name, args, ret, max_level):
         self.name = name
         self.arity = len(args)
         self.args = args
         self.ret = ret
+        self.max_level = max_level
         args = ", ".join(map("{{{0}}}".format, range(self.arity)))
         self.seq = "{name}({args})".format(name=self.name, args=args)
 
@@ -211,6 +213,9 @@ class Primitive(object):
                        for slot in self.__slots__)
         else:
             return NotImplemented
+
+    def __repr__(self):
+        return self.seq
 
 
 class Terminal(object):
@@ -238,6 +243,9 @@ class Terminal(object):
                        for slot in self.__slots__)
         else:
             return NotImplemented
+
+    def __repr__(self):
+        return "{name}({value})".format(name=self.name, value=self.value)
 
 
 class Ephemeral(Terminal):
@@ -323,18 +331,20 @@ class PrimitiveSetTyped(object):
             if issubclass(prim.ret, type_):
                 dict_[type_].append(prim)
 
-    def addPrimitive(self, primitive, in_types, ret_type, name=None):
+    def addPrimitive(self, primitive, in_types, ret_type,
+                     max_level=2, name=None):
         """Add a primitive to the set.
 
         :param primitive: callable object or a function.
         :param in_types: list of primitives arguments' type
         :param ret_type: type returned by the primitive.
+        :param max_level: maximum number of levels required by the primitive.
         :param name: alternative name for the primitive instead
                      of its __name__ attribute.
         """
         if name is None:
             name = primitive.__name__
-        prim = Primitive(name, in_types, ret_type)
+        prim = Primitive(name, in_types, ret_type, max_level)
 
         assert name not in self.context or \
                self.context[name] is primitive, \
@@ -606,14 +616,20 @@ def generate(pset, min_, max_, condition, type_=None):
     :returns: A grown tree with leaves at possibly different depths
               depending on the condition function.
     """
+
     if type_ is None:
         type_ = pset.ret
     expr = []
-    height = random.randint(min_, max_)
+    sampled_height = random.randint(min_, max_)
     stack = [(0, type_)]
     while len(stack) != 0:
         depth, type_ = stack.pop()
-        if condition(height, depth):
+        # filter out the primitive with levels <= current height
+        valid_prim_set = [ps for ps in pset.primitives[type_]
+                          if (depth + ps.max_level) <= sampled_height]
+
+        # sample a terminal node
+        if condition(sampled_height, depth) or not len(valid_prim_set):
             try:
                 term = random.choice(pset.terminals[type_])
             except IndexError:
@@ -624,9 +640,10 @@ def generate(pset, min_, max_, condition, type_=None):
             if isclass(term):
                 term = term()
             expr.append(term)
-        else:
+
+        else:  # sample a primitive node
             try:
-                prim = random.choice(pset.primitives[type_])
+                prim = random.choice(valid_prim_set)
             except IndexError:
                 _, _, traceback = sys.exc_info()
                 raise IndexError, "The gp.generate function tried to add " \
@@ -1063,7 +1080,7 @@ def harm(population, toolbox, cxpb, mutpb, ngen,
     record = stats.compile(population) if stats else {}
     logbook.record(gen=0, nevals=len(invalid_ind), **record)
     if verbose:
-        print logbook.stream
+        print(logbook.stream)
 
     # Begin the generational process
     for gen in range(1, ngen + 1):
@@ -1130,7 +1147,7 @@ def harm(population, toolbox, cxpb, mutpb, ngen,
         record = stats.compile(population) if stats else {}
         logbook.record(gen=gen, nevals=len(invalid_ind), **record)
         if verbose:
-            print logbook.stream
+            print(logbook.stream)
 
     return population, logbook
 
